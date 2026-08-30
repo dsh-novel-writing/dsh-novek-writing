@@ -1,6 +1,6 @@
 # 小说台（novel-studio）
 
-DeepSeek Harness 插件。气质参考墨庐的文稿台（单栏衬线稿纸、封面书架），细节以仓库 `Design.md` v0.1 为准：简单、设定分层、作者改设定、模型只读写正文。
+DeepSeek Harness 插件。气质参考墨庐的文稿台（单栏衬线稿纸、封面书架），细节以仓库 `docs/design.md` v0.1 为准：简单、设定分层、作者改设定、模型只读写正文。
 
 侧栏底部点「小说」后是 **侧栏 | 小说台 | 对话**。三页：
 
@@ -50,3 +50,9 @@ dsh plugin --profile web add .
 pnpm install
 pnpm check
 ```
+
+## 文档
+
+- 设计：[`docs/design.md`](docs/design.md)
+- 每次上传附带的用户原文：[`docs/prompts.md`](docs/prompts.md)
+
