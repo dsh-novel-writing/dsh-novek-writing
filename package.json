@@ -1,0 +1,22 @@
+{
+  "name": "novel-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "墨庐 · 小说创作工作台 —— 零依赖的交互式 HTML 原型",
+  "homepage": "https://jin1139732559-bot.github.io/novel-workbench/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jin1139732559-bot/novel-workbench.git"
+  },
+  "scripts": {
+    "test": "node test/smoke.js",
+    "serve": "npx --yes serve ."
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  },
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "license": "UNLICENSED"
+}

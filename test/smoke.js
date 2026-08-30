@@ -21,10 +21,12 @@ const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'http://localhost
 const { window } = dom;
 const { document } = window;
 
-/* 串联 data.js + app.js 后 eval（window.eval 的 const/let 不进 window，也不跨调用共享；
+/* 串联 storage.js + data.js + app.js 后 eval（window.eval 的 const/let 不进 window，也不跨调用共享；
    因此在脚本末尾挂一个直接 eval 桥接，所有断言经由它读取脚本内的词法作用域） */
-const src = fs.readFileSync(path.join(ROOT, 'js', 'data.js'), 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8')
-  + '\nwindow.__ml = { get DATA(){ return DATA; }, get state(){ return state; }, MODULES, LIST_RENDERERS, evalIn: c => eval(c) };';
+const read = f => fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+const src = [read('storage.js'), read('data.js'), read('app.js')].join('\n')
+  + '\nwindow.__ml = { get DATA(){ return DATA; }, get state(){ return state; }, get BOOKS(){ return BOOKS; },'
+  + ' MODULES, LIST_RENDERERS, ML_STORE, evalIn: c => eval(c) };';
 window.eval(src);
 
 let pass = 0, fail = 0;
@@ -322,9 +324,365 @@ ok($('.book-card .book-words').textContent.includes('总字数'), '书库显示�
 EV($('.book-card [data-act="edit"]'), 'click');
 ok(!document.body.classList.contains('view-home'), '点击编辑进入工作台');
 
-/* ---------- 7. 正文图片：插入 / 调整大小 / 旋转 / 移除 ---------- */
+/* ---------- 7. 设定分区：顶部 ＋ 建同级分区 / 预设分区名可改 ---------- */
+EV($('[data-module="settings"]'), 'click');
+const sgBefore = evalJS('DATA.settingsGroups.length');
+const sgItems = () => evalJS('DATA.settingsGroups.reduce((s, g) => s + g.items.length, 0)');
+const sgItemsBefore = sgItems();
+EV($('#moduleAdd'), 'click');
+ok(evalJS('DATA.settingsGroups.length') === sgBefore + 1, '设定：顶部 ＋ 新建分区（不再往核心规则里塞条目）');
+ok(sgItems() === sgItemsBefore, '设定：顶部 ＋ 不改变条目总数');
+ok($$('.setting-group').length === sgBefore + 1, '设定：新分区渲染在侧栏');
+const newSg = evalJS('DATA.settingsGroups[DATA.settingsGroups.length - 1]');
+ok(/^分区/.test(newSg.name), '设定：新分区默认名为「分区N」（实际 ' + newSg.name + '）');
+ok(newSg.items.length === 0, '设定：新分区初始为空');
+const sgNames = evalJS('DATA.settingsGroups.map(g => g.name)');
+ok(sgNames.includes('核心规则') && sgNames.includes('历史大事') && sgNames.includes(newSg.name),
+  '设定：新分区与核心规则 / 历史大事同级（' + sgNames.join(' / ') + '）');
+
+/* 预设分区「核心规则」双击改名 */
+const coreHead = $('.setting-group .sg-head[data-group="核心规则"]');
+ok(!!coreHead.querySelector('.sg-name'), '设定：分区名有独立的 .sg-name 元素');
+EV(coreHead.querySelector('.sg-name'), 'dblclick');
+let sgInp = coreHead.querySelector('.tree-name-input');
+ok(!!sgInp, '设定：双击分区名出现重命名输入框');
+sgInp.value = '世界规则';
+KEY(sgInp, 'Enter');
+ok(evalJS('DATA.settingsGroups.some(g => g.name === "世界规则")'), '设定：预设分区「核心规则」改名写回数据');
+ok(!evalJS('DATA.settingsGroups.some(g => g.name === "核心规则")'), '设定：旧分区名已不存在');
+ok($$('.sg-head').some(h => h.dataset.group === '世界规则'), '设定：侧栏显示新分区名');
+
+/* 分区名参与条目 id，改名后条目不能丢、且仍能继续新建 */
+const renamedCount = evalJS('DATA.settingsGroups.find(g => g.name === "世界规则").items.length');
+ok(renamedCount > 0, '设定：改名后分区内条目未丢失（' + renamedCount + ' 条）');
+EV($('.setting-group .sg-head[data-group="世界规则"] .row-act.add'), 'click');
+ok(evalJS('DATA.settingsGroups.find(g => g.name === "世界规则").items.length') === renamedCount + 1,
+  '设定：改名后的分区下仍可新建条目');
+
+/* 预设分区「历史大事」同样可改 */
+const histHead = $('.setting-group .sg-head[data-group="历史大事"]');
+EV(histHead.querySelector('.sg-name'), 'dblclick');
+sgInp = histHead.querySelector('.tree-name-input');
+sgInp.value = '年表';
+KEY(sgInp, 'Enter');
+ok(evalJS('DATA.settingsGroups.some(g => g.name === "年表")'), '设定：预设分区「历史大事」同样可改名');
+
+/* 重名会破坏「分区名·条目名」定位，应被拒绝 */
+const dupHead = $('.setting-group .sg-head[data-group="年表"]');
+EV(dupHead.querySelector('.sg-name'), 'dblclick');
+sgInp = dupHead.querySelector('.tree-name-input');
+sgInp.value = '世界规则';
+KEY(sgInp, 'Enter');
+ok(evalJS('DATA.settingsGroups.filter(g => g.name === "世界规则").length') === 1, '设定：拒绝重名分区');
+ok(evalJS('DATA.settingsGroups.some(g => g.name === "年表")'), '设定：重名被拒后原名保留');
+
+/* 空名视为放弃修改 */
+const keepHead = $('.setting-group .sg-head[data-group="年表"]');
+EV(keepHead.querySelector('.sg-name'), 'dblclick');
+sgInp = keepHead.querySelector('.tree-name-input');
+sgInp.value = '   ';
+KEY(sgInp, 'Enter');
+ok(evalJS('DATA.settingsGroups.some(g => g.name === "年表")'), '设定：空名不改动原分区名');
+
+/* 改名依赖点击分区名，因此点名字不能连带折叠 */
+const foldHead = $('.setting-group .sg-head[data-group="世界规则"]');
+const foldGroup = foldHead.parentElement;
+const wasCollapsed = foldGroup.classList.contains('collapsed');
+EV(foldHead.querySelector('.sg-name'), 'click');
+ok(foldGroup.classList.contains('collapsed') === wasCollapsed, '设定：点击分区名不触发折叠');
+EV(foldHead.querySelector('.fold-mark'), 'click');
+ok(foldGroup.classList.contains('collapsed') !== wasCollapsed, '设定：点击折叠标记仍可折叠');
+
+/* 分区删除：二次确认，空分区 */
+const sgDelBase = evalJS('DATA.settingsGroups.length');
+const emptySg = evalJS('DATA.settingsGroups[DATA.settingsGroups.length - 1].name');
+const sgDelBtn = $('.setting-group .sg-head[data-group="' + emptySg + '"] .row-act.del');
+ok(!!sgDelBtn, '设定：分区头有删除按钮');
+EV(sgDelBtn, 'click');
+ok(sgDelBtn.classList.contains('confirming'), '设定：分区删除进入二次确认态');
+ok(evalJS('DATA.settingsGroups.length') === sgDelBase, '设定：首次点击不删除');
+EV(sgDelBtn, 'click');
+ok(evalJS('DATA.settingsGroups.length') === sgDelBase - 1, '设定：二次确认后分区被删除');
+ok(!evalJS('DATA.settingsGroups.some(g => g.name === ' + JSON.stringify(emptySg) + ')'), '设定：被删分区已不在数据中');
+ok(!$$('.sg-head').some(h => h.dataset.group === emptySg), '设定：侧栏不再显示该分区');
+
+/* 分区删除：含条目的分区应连带清空条目与选中态 */
+const richSg = evalJS('DATA.settingsGroups.find(g => g.items.length > 0).name');
+const richCount = evalJS('DATA.settingsGroups.find(g => g.name === ' + JSON.stringify(richSg) + ').items.length');
+const totalBeforeDel = sgItems();
+const richHead = $('.setting-group .sg-head[data-group="' + richSg + '"]');
+EV(richHead.nextElementSibling.querySelector('.term-row'), 'click');
+ok(evalJS('state.termId') !== null, '设定：已选中待删分区内的条目');
+const richDelBtn = richHead.querySelector('.row-act.del');
+EV(richDelBtn, 'click');
+EV(richDelBtn, 'click');
+ok(sgItems() === totalBeforeDel - richCount, '设定：删除分区连带移除其 ' + richCount + ' 条条目');
+ok(!evalJS('DATA.settingsGroups.some(g => g.name === ' + JSON.stringify(richSg) + ')'), '设定：含条目的分区已删除');
+ok(evalJS('state.termId') === null, '设定：删除分区后清空选中态（编辑区不再指向已删数据）');
+
+/* ---------- 7b. 资料库分组：与设定分区一致的新建 / 改名 / 删除 ---------- */
+EV($('[data-module="library"]'), 'click');
+const libGroups = () => evalJS('DATA.library.map(g => g.group)');
+const libItems = () => evalJS('DATA.library.reduce((s, g) => s + g.items.length, 0)');
+
+/* 顶部 ＋ 建的是同级分组，不是往第一个分组里塞条目 */
+const libGBase = evalJS('DATA.library.length');
+const libItemsBase = libItems();
+EV($('#moduleAdd'), 'click');
+ok(evalJS('DATA.library.length') === libGBase + 1, '资料库：顶部 ＋ 新建同级分组');
+ok(libItems() === libItemsBase, '资料库：顶部 ＋ 不改变条目总数');
+ok($$('.group-head').length === libGBase + 1, '资料库：新分组渲染在侧栏');
+
+/* 分组名可双击改名（预设分组同样可改） */
+const libHead = $('.group-head[data-group="地名考据"]');
+ok(!!libHead, '资料库：预设分组「地名考据」存在');
+ok(!!libHead.querySelector('.g-name'), '资料库：分组名有独立的 .g-name 元素');
+ok(!!libHead.querySelector('.row-act.del'), '资料库：分组头有删除按钮');
+EV(libHead.querySelector('.g-name'), 'dblclick');
+let libInp = libHead.querySelector('.tree-name-input');
+ok(!!libInp, '资料库：双击分组名出现重命名输入框');
+const libRenamedCount = evalJS('DATA.library[0].items.length');
+libInp.value = '地理志';
+KEY(libInp, 'Enter');
+ok(libGroups().includes('地理志'), '资料库：预设分组改名写回数据');
+ok(!libGroups().includes('地名考据'), '资料库：旧分组名已不存在');
+ok($$('.group-head').some(h => h.dataset.group === '地理志'), '资料库：侧栏显示新分组名');
+ok(evalJS('DATA.library[0].items.length') === libRenamedCount, '资料库：改名后分组内条目未丢失（' + libRenamedCount + ' 条）');
+EV($('.group-head[data-group="地理志"] .row-act.add'), 'click');
+ok(evalJS('DATA.library[0].items.length') === libRenamedCount + 1, '资料库：改名后的分组下仍可新建条目');
+ok(evalJS('state.termId').indexOf('地理志·') === 0, '资料库：选中态跟着新分组名迁移');
+
+/* 条目 id 是「分组名·条目名」，且设定与资料库共用这套 id，故跨模块重名也必须拒绝 */
+const libDupHead = $('.group-head[data-group="地理志"]');
+EV(libDupHead.querySelector('.g-name'), 'dblclick');
+libInp = libDupHead.querySelector('.tree-name-input');
+libInp.value = evalJS('DATA.library[1].group');
+KEY(libInp, 'Enter');
+ok(libGroups().includes('地理志'), '资料库：同模块重名被拒，原名保留');
+const sgLeft = evalJS('DATA.settingsGroups[0].name');
+EV($('.group-head[data-group="地理志"] .g-name'), 'dblclick');
+libInp = $('.group-head[data-group="地理志"] .tree-name-input');
+libInp.value = sgLeft;
+KEY(libInp, 'Enter');
+ok(libGroups().includes('地理志'), '资料库：与设定分区同名也被拒（两者共用条目 id）');
+ok(evalJS('DATA.settingsGroups.filter(g => g.name === ' + JSON.stringify(sgLeft) + ').length') === 1, '资料库：跨模块重名未污染设定分区');
+
+/* 空名视为放弃修改 */
+EV($('.group-head[data-group="地理志"] .g-name'), 'dblclick');
+libInp = $('.group-head[data-group="地理志"] .tree-name-input');
+libInp.value = '   ';
+KEY(libInp, 'Enter');
+ok(libGroups().includes('地理志'), '资料库：空名不改动原分组名');
+
+/* 改名依赖点击分组名，因此点名字不能连带折叠 */
+const libFold = $('.group-head[data-group="地理志"]');
+const libWasOpen = libFold.classList.contains('open');
+EV(libFold.querySelector('.g-name'), 'click');
+ok(libFold.classList.contains('open') === libWasOpen, '资料库：点击分组名不触发折叠');
+EV(libFold.querySelector('.fold-mark'), 'click');
+ok(libFold.classList.contains('open') !== libWasOpen, '资料库：点击折叠标记仍可折叠');
+
+/* 分组删除：二次确认，空分组 */
+const libDelBase = evalJS('DATA.library.length');
+const emptyLib = evalJS('DATA.library[DATA.library.length - 1].group');
+const libDelBtn = $('.group-head[data-group="' + emptyLib + '"] .row-act.del');
+EV(libDelBtn, 'click');
+ok(libDelBtn.classList.contains('confirming'), '资料库：分组删除进入二次确认态');
+ok(evalJS('DATA.library.length') === libDelBase, '资料库：首次点击不删除');
+EV(libDelBtn, 'click');
+ok(evalJS('DATA.library.length') === libDelBase - 1, '资料库：二次确认后分组被删除');
+ok(!libGroups().includes(emptyLib), '资料库：被删分组已不在数据中');
+ok(!$$('.group-head').some(h => h.dataset.group === emptyLib), '资料库：侧栏不再显示该分组');
+
+/* 分组删除：含条目的分组应连带清空条目与选中态 */
+const richLib = evalJS('DATA.library.find(g => g.items.length > 0).group');
+const richLibCount = evalJS('DATA.library.find(g => g.group === ' + JSON.stringify(richLib) + ').items.length');
+const libItemsBeforeDel = libItems();
+const richLibHead = $('.group-head[data-group="' + richLib + '"]');
+EV(richLibHead.nextElementSibling.querySelector('.term-row'), 'click');
+ok(evalJS('state.termId') !== null, '资料库：已选中待删分组内的条目');
+const richLibDel = richLibHead.querySelector('.row-act.del');
+EV(richLibDel, 'click');
+EV(richLibDel, 'click');
+ok(libItems() === libItemsBeforeDel - richLibCount, '资料库：删除分组连带移除其 ' + richLibCount + ' 条条目');
+ok(!libGroups().includes(richLib), '资料库：含条目的分组已删除');
+ok(evalJS('state.termId') === null, '资料库：删除分组后清空选中态');
+
+/* 素材库仍是原有行为，不应被这轮改动带上删除按钮 */
+EV($('[data-module="materials"]'), 'click');
+ok($$('.group-head').every(h => !h.querySelector('.row-act.del')), '素材库：分组头保持原样（无删除按钮）');
+ok($$('.group-head').every(h => !h.querySelector('.g-name')), '素材库：分组名未接入改名');
+
+/* ---------- 8. 持久化：字段写回 / 落盘 / 还原 ---------- */
+ok(evalJS('typeof ML_STORE === "object" && ML_STORE !== null'), '持久化模块已加载');
+ok(evalJS('ML_STORE.hasLS'), 'localStorage 可用（jsdom 无 IndexedDB，走快照兜底路径）');
+ok(evalJS('ML_STORE.hasIDB') === false, 'jsdom 环境如实报告 IndexedDB 不可用');
+
+/* 章节正文：此前是硬编码空值，从不写回数据 */
+EV($('[data-module="chapters"]'), 'click');
+const pRow = $('.chapter-row');
+const pChId = pRow.dataset.id;
+EV(pRow, 'click');
+const bodyField = $('#pageWrap .field-input[data-field="body"]');
+ok(!!bodyField, '章节正文字段带有 data-field="body"');
+bodyField.innerHTML = '第一章的正文内容';
+bodyField.dispatchEvent(new window.Event('input', { bubbles: true }));
+ok(evalJS('chapterById("' + pChId + '").chapter.body') === '第一章的正文内容', '章节正文写回数据模型');
+ok(evalJS('chapterById("' + pChId + '").chapter.words') === 8, '章节字数按正文实际长度统计');
+
+/* 切到别的章节再切回来：内容应当还在 */
+EV($$('.chapter-row')[1], 'click');
+EV($('.chapter-row'), 'click');
+ok($('#pageWrap .field-input[data-field="body"]').innerHTML === '第一章的正文内容', '切换条目后正文仍可恢复');
+
+/* 富文本（图片 / 加粗）按 innerHTML 存取 */
+const richField = $('#pageWrap .field-input[data-field="body"]');
+richField.innerHTML = '正文<b>加粗</b>片段';
+richField.dispatchEvent(new window.Event('input', { bubbles: true }));
+ok(evalJS('chapterById("' + pChId + '").chapter.body').includes('<b>加粗</b>'), '富文本标记随正文一同保存');
+
+/* 其余模块的字段同样接入数据模型 */
+EV($('[data-module="notes"]'), 'click');
+EV($('.note-card'), 'click');
+const noteField = $('#pageWrap .field-input[data-field="excerpt"]');
+ok(!!noteField, 'notes：笔记正文字段已绑定');
+noteField.innerHTML = '一条笔记';
+noteField.dispatchEvent(new window.Event('input', { bubbles: true }));
+ok(evalJS('DATA.notes[0].excerpt') === '一条笔记', 'notes：笔记正文写回数据模型');
+
+/* 先前完全没有数据落点的 7 个字段，现在都有 data-field */
+const boundFields = [
+  ['chapters', '.chapter-row', ['body', 'note']],
+  ['outline', '.tree-row', ['note', 'link']],
+  ['timeline', '.tl-item', ['desc', 'impact']],
+  ['settings', '.term-row', ['def', 'extra']],
+  ['materials', '.mat-row', ['note']]
+];
+for (const [m, rowSel, keys] of boundFields) {
+  EV($('[data-module="' + m + '"]'), 'click');
+  const r = $(rowSel);
+  if (!r) { ok(false, m + '：找不到条目行'); continue; }
+  EV(r, 'click');
+  const got = $$('#pageWrap .field-input[data-field]').map(el => el.dataset.field);
+  ok(keys.every(k => got.includes(k)), m + '：字段已绑定（' + keys.join(' / ') + '）');
+}
+
+/* 立即落盘，校验 localStorage 快照 */
+evalJS('saveLibrary()');
+const snapRaw = window.localStorage.getItem('ml-books');
+ok(!!snapRaw, 'localStorage 已写入书库快照');
+let snap = null;
+try { snap = JSON.parse(snapRaw); } catch (e) {}
+ok(!!snap && Array.isArray(snap.books), '快照结构含 books 数组');
+ok(!!snap && typeof snap.savedAt === 'string' && snap.savedAt.length > 0, '快照带有保存时间戳');
+ok(!!snapRaw && snapRaw.includes('第一章的正文内容') === false, '快照记录的是最新正文（旧内容已被覆盖）');
+ok(!!snapRaw && snapRaw.includes('加粗'), '快照中包含最新写入的正文');
+
+/* 模拟重新打开页面：从快照还原 */
+const restoredBody = evalJS(
+  '(() => { const bs = sanitizeBooks(' + JSON.stringify(snap.books) + ');'
+  + ' return bs && bs[0].volumes[0].chapters[0].body; })()'
+);
+ok(typeof restoredBody === 'string' && restoredBody.includes('加粗'), '还原后的数据仍含章节正文');
+ok(evalJS('sanitizeBooks([])') === null, 'sanitizeBooks 拒绝空数据');
+ok(evalJS('sanitizeBooks("nonsense")') === null, 'sanitizeBooks 拒绝非法数据');
+
+/* 早期版本 body 为数组占位，应归一为字符串 */
+ok(evalJS('sanitizeBooks([{ volumes: [{ chapters: [{ body: [] }] }] }])[0].volumes[0].chapters[0].body') === '',
+  '旧版数组型 body 归一为空字符串');
+
+/* ---------- 9. 时间线长按拖动排序 + 10. 正文图片 ---------- */
 (async () => {
   try {
+    /* === 9. 时间线：长按拾起 → 拖动 → 松开提交 === */
+    EV($('[data-module="timeline"]'), 'click');
+    const tlOrder = () => evalJS('DATA.timeline.map(t => t.year)');
+    const tlDom = () => $$('.timeline .tl-item').map(el => el.dataset.id);
+    const MEV = (el, type, x, y) => el.dispatchEvent(new window.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0
+    }));
+    /* jsdom 无布局，getBoundingClientRect 全为 0；按当前 DOM 顺序合成每行 40px 的几何 */
+    const stubRects = () => {
+      $$('.timeline .tl-item').forEach(el => {
+        el.getBoundingClientRect = () => {
+          const sibs = Array.from(el.parentNode.children).filter(x => x.classList.contains('tl-item'));
+          const i = sibs.indexOf(el);
+          return { top: i * 40, bottom: i * 40 + 40, height: 40, left: 0, right: 200, width: 200, x: 0, y: i * 40, toJSON() {} };
+        };
+      });
+    };
+
+    const before = tlOrder();
+    ok(before.length >= 4, '时间线：有足够事件可排序（' + before.length + ' 个）');
+    ok(tlDom().join('|') === before.join('|'), '时间线：DOM 顺序与数据顺序一致');
+
+    /* 快速点击不该触发拖动 */
+    let row = $('.timeline .tl-item');
+    MEV(row, 'mousedown', 10, 5);
+    MEV(row, 'mouseup', 10, 5);
+    ok(!row.classList.contains('tl-dragging'), '时间线：快速点击不进入拖动态');
+    ok(tlOrder().join('|') === before.join('|'), '时间线：快速点击不改变顺序');
+
+    /* 长按成立前就移动 → 判为划选，取消拾起 */
+    row = $('.timeline .tl-item');
+    MEV(row, 'mousedown', 10, 5);
+    MEV(row, 'mousemove', 10, 60);
+    await new Promise(r => setTimeout(r, 450));
+    ok(!row.classList.contains('tl-dragging'), '时间线：长按成立前移动则取消拾起');
+    MEV(row, 'mouseup', 10, 60);
+    ok(tlOrder().join('|') === before.join('|'), '时间线：取消拾起后顺序不变');
+
+    /* 完整长按拖动 */
+    stubRects();
+    row = $('.timeline .tl-item');
+    const movedId = row.dataset.id;
+    MEV(row, 'mousedown', 10, 5);
+    await new Promise(r => setTimeout(r, 450));
+    ok(row.classList.contains('tl-dragging'), '时间线：长按 350ms 后进入拖动态');
+    ok($('.timeline').classList.contains('tl-reordering'), '时间线：容器进入排序态');
+    ok(document.body.classList.contains('no-select'), '时间线：拖动中禁用文字划选');
+
+    /* 拖到第 3 行中线（top=80）以下 → 应换位到其后 */
+    MEV(row, 'mousemove', 10, 105);
+    ok(tlDom()[0] !== movedId, '时间线：拖动过程中实时换位（松手前已见预览）');
+
+    MEV(row, 'mouseup', 10, 105);
+    const after = tlOrder();
+    ok(after.length === before.length, '时间线：拖动后事件总数不变');
+    ok(after.join('|') !== before.join('|'), '时间线：松开后数据顺序已更新');
+    ok(after.indexOf(movedId) > 0, '时间线：被拖事件已离开首位（现为第 ' + (after.indexOf(movedId) + 1) + ' 位）');
+    ok(before.every(y => after.includes(y)), '时间线：拖动未丢失任何事件');
+    ok(!$$('.timeline .tl-item').some(el => el.classList.contains('tl-dragging')), '时间线：松开后清除拖动态');
+    ok(!$('.timeline').classList.contains('tl-reordering'), '时间线：松开后容器退出排序态');
+    ok(!document.body.classList.contains('no-select'), '时间线：松开后恢复文字划选');
+    ok(tlDom().join('|') === after.join('|'), '时间线：重渲染后 DOM 与数据顺序一致');
+
+    /* 新顺序应当落盘 */
+    evalJS('saveLibrary()');
+    const tlSnap = JSON.parse(window.localStorage.getItem('ml-books'));
+    ok(tlSnap.books[0].timeline.map(t => t.year).join('|') === after.join('|'), '时间线：新顺序已写入本地存储');
+
+    /* 搜索过滤时禁止拖动，避免打乱被隐藏的条目。
+       用首行自身的完整检索串作关键词，保证首行必然命中、其余行必然被隐藏 */
+    const soloKey = $('.timeline .tl-item').dataset.search;
+    $('#searchInput').value = soloKey;
+    $('#searchInput').dispatchEvent(new window.Event('input', { bubbles: true }));
+    ok($$('.timeline .tl-item.hidden').length === before.length - 1, '时间线：检索串仅保留一条可见事件');
+
+    const orderUnderFilter = tlOrder();
+    stubRects();
+    const fRow = $$('.timeline .tl-item').find(el => !el.classList.contains('hidden'));
+    MEV(fRow, 'mousedown', 10, 5);
+    await new Promise(r => setTimeout(r, 450));
+    ok(!fRow.classList.contains('tl-dragging'), '时间线：搜索过滤时不进入拖动态');
+    MEV(fRow, 'mouseup', 10, 5);
+    ok(tlOrder().join('|') === orderUnderFilter.join('|'), '时间线：搜索过滤时顺序不被改动');
+
+    $('#searchInput').value = '';
+    $('#searchInput').dispatchEvent(new window.Event('input', { bubbles: true }));
+    ok($$('.timeline .tl-item.hidden').length === 0, '时间线：清空搜索后全部事件恢复可见');
+
+    /* === 10. 正文图片 === */
     EV($('[data-module="chapters"]'), 'click');
     EV($('.chapter-row'), 'click');
     ok(!!$('#pageWrap .field-input'), '章节正文编辑区存在');

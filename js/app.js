@@ -21,6 +21,156 @@ const store = {
   set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
 };
 
+/* ================= 书库持久化 ================= */
+
+const persist = { timer: null, saving: false, again: false, warned: false, savedAt: '', touched: false, booting: true };
+
+function setSaveState(kind) {
+  const map = {
+    saving: ['保存中…', '正在自动保存'],
+    saved:  ['已保存 · 刚刚', '自动保存 · 刚刚'],
+    fail:   ['保存失败 · 请导出备份', '自动保存失败 · 请导出备份'],
+    none:   ['未启用本地存储', '本地存储不可用 · 请导出备份'],
+  };
+  const m = map[kind] || map.saved;
+  const el = $('#saveState');
+  const auto = $('#autoSaveText');
+  if (el) el.innerHTML = '<span class="dot"></span>' + m[0];
+  if (auto) auto.textContent = m[1];
+}
+
+/* 防抖写盘：连续键入只在停顿后落一次 */
+function markDirty(delay) {
+  if (persist.booting) return;   /* 启动渲染阶段不回写，避免覆盖待接管的主存副本 */
+  persist.touched = true;
+  setSaveState('saving');
+  clearTimeout(persist.timer);
+  persist.timer = setTimeout(saveLibrary, delay === undefined ? 700 : delay);
+}
+
+function saveLibrary() {
+  clearTimeout(persist.timer);
+  if (!ML_STORE.usable) {
+    setSaveState('none');
+    if (!persist.warned) {
+      persist.warned = true;
+      toast('当前环境无法本地存储，请用「导出备份」保存进度');
+    }
+    return Promise.resolve(null);
+  }
+  /* 上一次仍在写盘：合并为一次后续写入，避免并发事务 */
+  if (persist.saving) { persist.again = true; return Promise.resolve(null); }
+  persist.saving = true;
+  return ML_STORE.save(BOOKS).then(res => {
+    persist.saving = false;
+    persist.savedAt = (res && res.savedAt) || '';
+    if (res && !res.ls && !res.idb) {
+      setSaveState('fail');
+      if (!persist.warned) {
+        persist.warned = true;
+        toast('本地存储写入失败，请用「导出备份」保存进度');
+      }
+    } else {
+      setSaveState('saved');
+    }
+    if (persist.again) { persist.again = false; return saveLibrary(); }
+    return res;
+  }).catch(() => {
+    persist.saving = false;
+    setSaveState('fail');
+    return null;
+  });
+}
+
+/* 载入的数据可能来自旧版本或被截断，补齐结构后再交给应用 */
+function sanitizeBooks(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const S = v => (typeof v === 'string' ? v : '');
+  const A = v => (Array.isArray(v) ? v : []);
+  const N = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+  const rid = p => p + Math.random().toString(36).slice(2, 8);
+
+  const books = [];
+  list.forEach((b, i) => {
+    if (!b || typeof b !== 'object') return;
+    const p = b.project && typeof b.project === 'object' ? b.project : {};
+    books.push({
+      id: S(b.id) || 'b' + Date.now() + i,
+      updated: S(b.updated) || '—',
+      project: {
+        name: S(p.name) || '未命名作品',
+        genre: S(p.genre) || '长篇',
+        targetWords: N(p.targetWords, 400000),
+        lastSaved: S(p.lastSaved) || '刚刚',
+        dailyGoal: N(p.dailyGoal, 2000),
+      },
+      volumes: A(b.volumes).map(v => ({
+        ...v,
+        id: S(v.id) || rid('v'),
+        title: S(v.title) || '未命名卷',
+        status: S(v.status) || '未开始',
+        chapters: A(v.chapters).map(c => ({
+          ...c,
+          id: S(c.id) || rid('c'),
+          title: S(c.title) || '未命名章节',
+          words: N(c.words, 0),
+          status: S(c.status) || '未开始',
+          edited: S(c.edited) || '—',
+          related: A(c.related),
+          /* 早期版本 body 是数组占位，统一为富文本字符串 */
+          body: S(c.body),
+          note: S(c.note),
+        })),
+      })),
+      characters: A(b.characters).map(c => ({ ...c, relations: A(c.relations) })),
+      world: A(b.world),
+      settingsGroups: A(b.settingsGroups).map(g => ({ ...g, name: S(g.name), items: A(g.items) })),
+      plotlines: A(b.plotlines),
+      timeline: A(b.timeline),
+      outline: A(b.outline).map(n => ({ ...n, children: A(n.children) })),
+      scenes: A(b.scenes).map(s => ({ ...s, chars: A(s.chars) })),
+      library: A(b.library).map(g => ({ ...g, group: S(g.group), items: A(g.items) })),
+      notes: A(b.notes),
+      materials: A(b.materials).map(g => ({ ...g, group: S(g.group), type: S(g.type) || 'text', items: A(g.items) })),
+      relations: b.relations && typeof b.relations === 'object'
+        ? { nodes: A(b.relations.nodes), links: A(b.relations.links) }
+        : { nodes: [], links: [] },
+    });
+  });
+  return books.length ? books : null;
+}
+
+/* BOOKS 是 const，原地替换内容并重新指向当前作品 */
+function adoptBooks(books) {
+  BOOKS.length = 0;
+  books.forEach(b => BOOKS.push(b));
+  DATA = BOOKS[0] || null;
+}
+
+/* 启动：先同步读快照立即渲染，再异步比对 IndexedDB 主存 */
+function bootData() {
+  const snap = ML_STORE.loadSync();
+  const books = snap && sanitizeBooks(snap.books);
+  if (books) {
+    adoptBooks(books);
+    persist.savedAt = snap.savedAt || '';
+  }
+  /* localStorage 超限没写成时，完整副本只存在于 IndexedDB */
+  ML_STORE.loadAsync().then(rec => {
+    if (!rec || persist.touched) return;
+    if (persist.savedAt && rec.savedAt && rec.savedAt <= persist.savedAt) return;
+    const fresh = sanitizeBooks(rec.books);
+    if (!fresh) return;
+    persist.booting = true;
+    adoptBooks(fresh);
+    persist.savedAt = rec.savedAt || '';
+    renderLibraryView();
+    if (!document.body.classList.contains('view-home') && DATA) initWorkbench();
+    persist.booting = false;
+  }).catch(() => {});
+}
+
+
 const charById = id => DATA.characters.find(c => c.id === id);
 const volumeById = id => DATA.volumes.find(v => v.id === id);
 const chapterById = id => {
@@ -251,9 +401,10 @@ function renderSettings() {
     <div class="setting-group">
       <div class="sg-head" data-group="${g.name}">
         <span class="fold-mark">${svg('<path d="M9 6l6 6-6 6"/>')}</span>
-        <span>${g.name}</span>
+        <span class="sg-name" title="双击可重命名分区">${g.name}</span>
         <span class="row-acts">
-          <button class="row-act add" title="在此分组下新建条目">${svg(I.plus)}</button>
+          <button class="row-act del" title="删除此分区（含全部条目）">${svg(I.trash)}</button>
+          <button class="row-act add" title="在此分区下新建条目">${svg(I.plus)}</button>
         </span>
       </div>
       <div class="sg-body">
@@ -308,8 +459,9 @@ function renderLibrary() {
   return DATA.library.map(g => `
     <div class="group-head open" data-group="${g.group}">
       <span class="fold-mark">${svg('<path d="M9 6l6 6-6 6"/>')}</span>
-      <span>${g.group}</span>
+      <span class="g-name" title="双击可重命名分组">${g.group}</span>
       <span class="row-acts">
+        <button class="row-act del" title="删除此分组（含全部条目）">${svg(I.trash)}</button>
         <button class="row-act add" title="在此分组下新建条目">${svg(I.plus)}</button>
       </span>
       <span class="g-meta">${g.items.length} 条</span>
@@ -370,6 +522,9 @@ function panelFoot(module) {
     case 'chapters': return `<span>点击章节在右侧编辑区打开</span>`;
     case 'characters': return `<span>点击人物打开人物页 · 双击名称重命名</span>`;
     case 'plot': return '<span>点击剧情线打开编辑页 · 类型标签可点击修改</span>';
+    case 'settings': return '<span>顶部 ＋ 新建分区 · 分区内 ＋ 新建条目 · 双击名称重命名</span>';
+    case 'library': return '<span>顶部 ＋ 新建分组 · 分组内 ＋ 新建条目 · 双击名称重命名</span>';
+    case 'timeline': return '<span>长按条目可拖动排序 · 双击时间修改 · 双击名称重命名</span>';
     default: return '<span>点击条目在右侧打开编辑页 · 双击名称重命名</span>';
   }
 }
@@ -392,6 +547,12 @@ function switchModule(module) {
   const meta = MODULES[module];
   $('#moduleTitle').innerHTML = `${meta.title}<span class="count">${meta.count()}</span>`;
   $('#moduleVol').style.display = (module === 'outline' || module === 'chapters') ? '' : 'none';
+  /* 设定 / 资料库 / 素材库的顶部 ＋ 建的是与预设同级的栏目，不是条目 */
+  $('#moduleAdd').title = {
+    settings: '新建分区（与核心规则、历史大事同级）',
+    library: '新建分组（与现有分组同级）',
+    materials: '新建素材组（与现有素材组同级）',
+  }[module] || '新建条目';
 
   BODY_EL.innerHTML = LIST_RENDERERS[module]();
   $('#panelFoot').innerHTML = panelFoot(module);
@@ -411,6 +572,7 @@ function rerenderList() {
   bindModuleEvents(m);
   refreshActive(m);
   updateDelBtn();
+  markDirty();   /* 侧栏结构性改动（新建 / 删除 / 重命名 / 改标签）统一在此落盘 */
 }
 
 /* 删除按钮可用性 */
@@ -453,19 +615,127 @@ function refreshActive(module) {
   $$('.list-item', BODY_EL).forEach(r => r.classList.toggle('active', r.dataset.id === state[SEL_KEYS[module]]));
 }
 
+/* ================= 时间线：长按拖动排序 ================= */
+
+const TL_LONG_PRESS_MS = 350;   /* 长按多久进入拖动态 */
+const TL_MOVE_TOLERANCE = 6;    /* 长按成立前允许的抖动像素 */
+
+const tlDrag = { timer: null, el: null, startX: 0, startY: 0, dragging: false, justDragged: false };
+let tlDragBound = false;
+
+function tlDragReset() {
+  clearTimeout(tlDrag.timer);
+  tlDrag.timer = null;
+  if (tlDrag.el) tlDrag.el.classList.remove('tl-dragging');
+  const box = $('.timeline', BODY_EL);
+  if (box) box.classList.remove('tl-reordering');
+  document.body.classList.remove('no-select');
+  tlDrag.el = null;
+  tlDrag.dragging = false;
+}
+
+/* DOM 顺序 → 数据顺序。年份即 id，重复年份按先到先消费保证结果确定 */
+function commitTimelineOrder() {
+  const ids = $$('.timeline .tl-item', BODY_EL).map(el => el.dataset.id);
+  const pool = DATA.timeline.slice();
+  const next = [];
+  ids.forEach(id => {
+    const i = pool.findIndex(t => t.year === id);
+    if (i > -1) next.push(pool.splice(i, 1)[0]);
+  });
+  next.push(...pool);   /* 理论上不该有剩余，兜底防丢条目 */
+  DATA.timeline = next;
+}
+
+function onTlMove(e) {
+  if (!tlDrag.el) return;
+  /* 长按还没成立就移动 → 判定为划选 / 滚动，取消 */
+  if (!tlDrag.dragging) {
+    if (Math.abs(e.clientY - tlDrag.startY) > TL_MOVE_TOLERANCE ||
+        Math.abs(e.clientX - tlDrag.startX) > TL_MOVE_TOLERANCE) {
+      clearTimeout(tlDrag.timer);
+      tlDrag.el = null;
+    }
+    return;
+  }
+  e.preventDefault();
+  /* 光标越过相邻条目中线即换位，直接移动真实节点做实时预览 */
+  const others = $$('.timeline .tl-item', BODY_EL).filter(el => el !== tlDrag.el);
+  const before = others.find(el => {
+    const r = el.getBoundingClientRect();
+    return e.clientY < r.top + r.height / 2;
+  });
+  if (before) before.parentNode.insertBefore(tlDrag.el, before);
+  else if (others.length) others[others.length - 1].parentNode.appendChild(tlDrag.el);
+}
+
+function onTlUp() {
+  if (!tlDrag.dragging) return tlDragReset();
+  commitTimelineOrder();
+  tlDragReset();
+  /* 拖完紧随的 click 不应再切换选中项 */
+  tlDrag.justDragged = true;
+  setTimeout(() => { tlDrag.justDragged = false; }, 0);
+  rerenderList();
+  refreshActive('timeline');
+  renderInspector();
+  toast('时间线顺序已更新');
+}
+
+function bindTimelineDrag() {
+  const box = $('.timeline', BODY_EL);
+  if (!box) return;
+
+  $$('.tl-item', box).forEach(item => {
+    item.onmousedown = e => {
+      if (e.button !== 0) return;                                   /* 仅左键 */
+      if (e.target.closest('.row-act, .tag-editable, input')) return;
+      /* 搜索过滤时列表不完整，拖动会打乱未显示的条目 */
+      if ($$('.timeline .tl-item.hidden', BODY_EL).length) {
+        return toast('搜索状态下不支持拖动排序，请先清空搜索');
+      }
+      tlDrag.el = item;
+      tlDrag.startX = e.clientX;
+      tlDrag.startY = e.clientY;
+      clearTimeout(tlDrag.timer);
+      tlDrag.timer = setTimeout(() => {
+        if (!tlDrag.el) return;
+        tlDrag.dragging = true;
+        tlDrag.el.classList.add('tl-dragging');
+        box.classList.add('tl-reordering');
+        document.body.classList.add('no-select');
+        toast('已拾起 · 上下拖动调整顺序，松开完成');
+      }, TL_LONG_PRESS_MS);
+    };
+  });
+
+  /* 文档级监听只挂一次，否则每次重渲染都会叠加 */
+  if (tlDragBound) return;
+  tlDragBound = true;
+  document.addEventListener('mousemove', onTlMove);
+  document.addEventListener('mouseup', onTlUp);
+  BODY_EL.addEventListener('click', e => {
+    if (tlDrag.justDragged) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+}
+
 function bindModuleEvents(module) {
-  /* 卷 / 文件夹折叠 */
+  /* 卷 / 文件夹折叠（分组名与改名输入框除外，否则重命名会连带折叠） */
   $$('.group-head', BODY_EL).forEach(h => {
-    h.onclick = () => {
+    h.onclick = e => {
+      if (e.target.closest('.g-name, .tree-name-input')) return;
       h.classList.toggle('open');
       const body = h.nextElementSibling;
       if (body && body.classList.contains('group-body')) body.style.display = h.classList.contains('open') ? '' : 'none';
     };
   });
 
-  /* 设定分区折叠 */
+  /* 设定分区折叠（分区名与改名输入框除外，否则重命名会连带折叠） */
   $$('.setting-group .sg-head', BODY_EL).forEach(h => {
-    h.onclick = () => h.parentElement.classList.toggle('collapsed');
+    h.onclick = e => {
+      if (e.target.closest('.sg-name, .tree-name-input')) return;
+      h.parentElement.classList.toggle('collapsed');
+    };
   });
 
   /* 设定分组行内 ＋：在该分组下直接新建条目 */
@@ -475,6 +745,23 @@ function bindModuleEvents(module) {
         e.stopPropagation();
         const head = btn.closest('.sg-head');
         addSettingItem(head.dataset.group);
+      };
+    });
+
+    /* 分区行内删除：二次确认后连同分区内条目一并删除 */
+    $$('.sg-head .row-act.del', BODY_EL).forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        confirmTermGroupDel('settings', btn, btn.closest('.sg-head').dataset.group);
+      };
+    });
+
+    /* 分区名双击就地重命名（预设的核心规则 / 历史大事同样可改） */
+    $$('.setting-group .sg-name', BODY_EL).forEach(el => {
+      el.ondblclick = e => {
+        e.stopPropagation();
+        const oldName = el.closest('.sg-head').dataset.group;
+        inlineEdit(el, val => renameTermGroup('settings', oldName, val));
       };
     });
   }
@@ -491,7 +778,25 @@ function bindModuleEvents(module) {
     });
   }
 
-  /* 时间线：双击灰色时间 → 就地修改 */
+  /* 资料库分组：行内删除 + 双击分组名改名（与设定分区一致） */
+  if (module === 'library') {
+    $$('.group-head .row-act.del', BODY_EL).forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        confirmTermGroupDel('library', btn, btn.closest('.group-head').dataset.group);
+      };
+    });
+
+    $$('.group-head .g-name', BODY_EL).forEach(el => {
+      el.ondblclick = e => {
+        e.stopPropagation();
+        const oldName = el.closest('.group-head').dataset.group;
+        inlineEdit(el, val => renameTermGroup('library', oldName, val));
+      };
+    });
+  }
+
+  /* 时间线：双击灰色时间 → 就地修改；长按条目 → 拖动排序 */
   if (module === 'timeline') {
     $$('.tl-item .tl-year', BODY_EL).forEach(y => {
       y.ondblclick = e => {
@@ -499,6 +804,7 @@ function bindModuleEvents(module) {
         editYear(y.closest('.tl-item'), y.closest('.tl-item').dataset.id);
       };
     });
+    bindTimelineDrag();
   }
 
   /* 大纲树：选中 + 折叠 + 行内操作（卷下加节点 / 删卷删节点 / 改类型 / 双击重命名） */
@@ -1026,6 +1332,73 @@ function confirmVolDel(head, btn, id) {
   delVolumeById(id);
 }
 
+/* 设定分区与资料库分组共用一套分区操作：两者的条目 id 都是「分区名·条目名」，
+   也都由 state.termId 选中，所以重名检查必须跨这两个模块 */
+const TERM_GROUP_CFG = {
+  settings: { list: () => DATA.settingsGroups, key: 'name',  word: '分区' },
+  library:  { list: () => DATA.library,        key: 'group', word: '分组' }
+};
+
+const termGroupNames = () =>
+  DATA.settingsGroups.map(g => g.name).concat(DATA.library.map(g => g.group));
+
+/* 删除分区 / 分组（连同其中全部条目） */
+function delTermGroup(m, name) {
+  const cfg = TERM_GROUP_CFG[m];
+  const list = cfg.list();
+  const idx = list.findIndex(g => g[cfg.key] === name);
+  if (idx < 0) return toast(`未找到该${cfg.word}`);
+  /* 选中项在该分区内 → 一并清空，避免编辑区指向已删数据 */
+  if (state.termId && state.termId.indexOf(name + '·') === 0) state.termId = null;
+  const removed = list.splice(idx, 1)[0];
+  rerenderList();
+  refreshActive(m);
+  updateDelBtn();
+  renderEditor();
+  renderInspector();
+  const n = removed.items.length;
+  toast(`已删除${cfg.word}「${name}」${n ? `及其 ${n} 条条目` : ''}`);
+}
+
+function confirmTermGroupDel(m, btn, name) {
+  const word = TERM_GROUP_CFG[m].word;
+  if (!btn.classList.contains('confirming')) {
+    btn.classList.add('confirming');
+    btn.title = '再次点击确认删除';
+    toast(`再次点击确认删除此${word}（含全部条目）`);
+    clearTimeout(rowDelTimer.t);
+    rowDelTimer.t = setTimeout(() => {
+      btn.classList.remove('confirming');
+      btn.title = `删除此${word}（含全部条目）`;
+    }, 3000);
+    return;
+  }
+  delTermGroup(m, name);
+}
+
+/* 重命名分区 / 分组（核心规则、历史大事等预设项同样可改） */
+function renameTermGroup(m, oldName, newName) {
+  const cfg = TERM_GROUP_CFG[m];
+  const g = cfg.list().find(x => x[cfg.key] === oldName);
+  if (!g) return;
+  const name = (newName || '').trim();
+  if (!name || name === oldName) return rerenderList();
+  if (termGroupNames().includes(name)) {
+    toast(`名称「${name}」已被占用，请换一个`);
+    return rerenderList();
+  }
+  g[cfg.key] = name;
+  /* 条目 id 形如「分区名·条目名」，选中项要跟着迁移 */
+  if (state.termId && state.termId.indexOf(oldName + '·') === 0) {
+    state.termId = name + '·' + state.termId.slice(oldName.length + 1);
+  }
+  rerenderList();
+  refreshActive(m);
+  renderEditor();
+  renderInspector();
+  toast(`${cfg.word}已改名为「${name}」`);
+}
+
 function confirmChapterDel(row, btn) {
   if (!btn.classList.contains('confirming')) {
     btn.classList.add('confirming');
@@ -1089,13 +1462,27 @@ function addMaterialItem(groupName) {
   toast(`已在「${g.group}」下新建素材`);
 }
 
-/* 新建分组（模块栏 ＋：资料库 / 素材库 = 新建新的子栏目） */
+/* 新建分组（模块栏 ＋：设定 / 资料库 / 素材库 = 新建与预设分区同级的新栏目） */
 function addGroup(m) {
-  if (m === 'library') {
-    DATA.library.push({ group: `分组${cnNum(DATA.library.length + 1)}`, items: [] });
-    toast('已新建资料库分组 · 分组行内 ＋ 可在该分组下新建条目');
+  /* 分组名是条目 id 的组成部分，重名会让 findTerm 取错条目，故逐个递增避开。
+     序号按本模块的分组数起算，但避让的是设定 + 资料库的全部名称 */
+  const uniqueName = (prefix, count, taken) => {
+    let n = count + 1;
+    let name = prefix + cnNum(n);
+    while (taken.includes(name)) name = prefix + cnNum(++n);
+    return name;
+  };
+  if (m === 'settings') {
+    const name = uniqueName('分区', DATA.settingsGroups.length, termGroupNames());
+    DATA.settingsGroups.push({ name, items: [] });
+    toast(`已新建设定分区「${name}」· 双击分区名可改名`);
+  } else if (m === 'library') {
+    const name = uniqueName('分组', DATA.library.length, termGroupNames());
+    DATA.library.push({ group: name, items: [] });
+    toast(`已新建资料库分组「${name}」· 双击分组名可改名`);
   } else if (m === 'materials') {
-    DATA.materials.push({ group: `素材组${cnNum(DATA.materials.length + 1)}`, type: 'text', items: [] });
+    const name = uniqueName('素材组', DATA.materials.length, DATA.materials.map(g => g.group));
+    DATA.materials.push({ group: name, type: 'text', items: [] });
     toast('已新建素材分组 · 分组行内 ＋ 可在该分组下新建素材');
   }
   rerenderList();
@@ -1174,7 +1561,7 @@ function addItem() {
       break;
     }
     case 'settings':
-      return addSettingItem(DATA.settingsGroups[0] && DATA.settingsGroups[0].name);
+      return addGroup('settings');
     case 'library':
       return addGroup('library');
     case 'notes': {
@@ -1282,12 +1669,12 @@ function bindDelBtn() {
 
 /* ================= 编辑区（内容页） ================= */
 
-/* 通用字段块 */
-function field(label, value, ph) {
+/* 通用字段块（key 为数据模型上的属性名，用于读取与写回） */
+function field(label, value, ph, key) {
   return `
     <div class="field">
       <div class="field-label"><span>${label}</span></div>
-      <div class="field-input" contenteditable="true" data-ph="${ph}">${value || ''}</div>
+      <div class="field-input" contenteditable="true" data-ph="${ph}"${key ? ` data-field="${key}"` : ''}>${value || ''}</div>
     </div>`;
 }
 
@@ -1329,8 +1716,8 @@ function volumePage(v) {
       meta: `${v.chapters.length} 章 · 共 ${fmt(words)} 字`,
       metaEdited: `最后编辑 ${v.edited || '—'}`,
       fields:
-        field('卷简介', '', '这一卷的整体构思、主题与基调……') +
-        field('章节规划', '', '本卷各章节的推进安排……'),
+        field('卷简介', v.intro, '这一卷的整体构思、主题与基调……', 'intro') +
+        field('章节规划', v.plan, '本卷各章节的推进安排……', 'plan'),
       extra: v.chapters.length
         ? `<div class="field"><div class="field-label"><span>本卷章节</span></div><div class="rels vol-chapters">${v.chapters.map(c => `<span class="rel-chip">${c.title}</span>`).join('')}</div></div>`
         : ''
@@ -1347,8 +1734,8 @@ function chapterPage(ch, v) {
       metaWords: `当前 ${fmt(ch.words)} 字`,
       metaEdited: `最后编辑 ${ch.edited === '—' ? '—' : ch.edited}`,
       fields:
-        field('章节正文', '', '从第一个句子开始，写下这一章……') +
-        field('章节备注', '', '写作意图 · 伏笔 · 与前后章的衔接……'),
+        field('章节正文', ch.body, '从第一个句子开始，写下这一章……', 'body') +
+        field('章节备注', ch.note, '写作意图 · 伏笔 · 与前后章的衔接……', 'note'),
       extra: `
         <div class="field">
           <div class="field-label"><span>相关人物</span><span class="f-hint">可自行编辑 · 输入名字回车添加</span></div>
@@ -1369,11 +1756,11 @@ function characterPage(c) {
       badge: c.role,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${c.edited || '—'}`,
       fields:
-        field('人物定位', c.tagline, '一句话描述这个人物的核心……') +
-        field('人物档案', c.desc, '外貌 · 性格 · 动机 · 成长弧线……') +
-        field('身份', c.identity, '职业、立场或处境……'),
+        field('人物定位', c.tagline, '一句话描述这个人物的核心……', 'tagline') +
+        field('人物档案', c.desc, '外貌 · 性格 · 动机 · 成长弧线……', 'desc') +
+        field('身份', c.identity, '职业、立场或处境……', 'identity'),
       extra: `
         <div class="field">
           <div class="field-label"><span>人物关系</span><span class="f-hint">可自行编辑 · 输入名字回车添加</span></div>
@@ -1392,10 +1779,10 @@ function worldPage(w) {
       badge: w.type,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${w.edited || '—'}`,
       fields:
-        field('概述', w.summary, '用几句话概括这一设定……') +
-        field('细节与规则', w.body, '补充细节、规则与示例……')
+        field('概述', w.summary, '用几句话概括这一设定……', 'summary') +
+        field('细节与规则', w.body, '补充细节、规则与示例……', 'body')
     })
   };
 }
@@ -1408,10 +1795,10 @@ function scenePage(s) {
       badge: s.type,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${s.edited || '—'}`,
       fields:
-        field('场景描写', s.desc, '视觉 · 声音 · 气味 · 光线……') +
-        field('氛围与冲突', s.mood, '氛围基调 · 场景内的冲突与转折……'),
+        field('场景描写', s.desc, '视觉 · 声音 · 气味 · 光线……', 'desc') +
+        field('氛围与冲突', s.mood, '氛围基调 · 场景内的冲突与转折……', 'mood'),
       extra: `<div class="field"><div class="field-label"><span>出场人物</span></div><div class="rels">${relChips(s.chars.map(id => ({ with: id, label: '出场' })))}</div></div>`
     })
   };
@@ -1425,10 +1812,10 @@ function plotPage(p) {
       badge: typeArr(p.type).join(' · '),
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${p.edited || '—'}`,
       fields:
-        field('剧情概述', p.note, '这条剧情线的目标与当前进展……') +
-        field('关键节点', p.chapters, '章节分布 · 转折点 · 伏笔回收时机……')
+        field('剧情概述', p.note, '这条剧情线的目标与当前进展……', 'note') +
+        field('关键节点', p.chapters, '章节分布 · 转折点 · 伏笔回收时机……', 'chapters')
     })
   };
 }
@@ -1441,10 +1828,10 @@ function timelinePage(t) {
       badge: t.type,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${t.edited || '—'}`,
       fields:
-        field('事件描述', t.desc, '记录事件发生的过程与细节……') +
-        field('影响与伏笔', '', '这一事件对后续的影响与呼应……')
+        field('事件描述', t.desc, '记录事件发生的过程与细节……', 'desc') +
+        field('影响与伏笔', t.impact, '这一事件对后续的影响与呼应……', 'impact')
     })
   };
 }
@@ -1457,10 +1844,10 @@ function outlinePage(n) {
       badge: n.type,
       badgeEdit: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${n.edited || '—'}`,
       fields:
-        field('要点', n.note, '这一节点的写作要点……') +
-        field('衔接说明', '', '与前后节点的衔接 · 节奏安排……')
+        field('要点', n.note, '这一节点的写作要点……', 'note') +
+        field('衔接说明', n.link, '与前后节点的衔接 · 节奏安排……', 'link')
     })
   };
 }
@@ -1473,10 +1860,10 @@ function termPage(t, groupName, fromModule) {
       badge: t.tag,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
+      metaEdited: `最后编辑 ${t.edited || '—'}`,
       fields:
-        field('定义', t.def, '写下这条定义……') +
-        field('补充说明', '', '用法示例 · 关联条目 · 备注……')
+        field('定义', t.def, '写下这条定义……', 'def') +
+        field('补充说明', t.extra, '用法示例 · 关联条目 · 备注……', 'extra')
     })
   };
 }
@@ -1489,8 +1876,8 @@ function notePage(n) {
       badge: n.tag,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
-      fields: field('笔记正文', n.excerpt, '写下你的想法……')
+      metaEdited: `最后编辑 ${n.edited || '—'}`,
+      fields: field('笔记正文', n.excerpt, '写下你的想法……', 'excerpt')
     })
   };
 }
@@ -1503,8 +1890,8 @@ function materialPage(m, g) {
       badge: m.tag,
       badgeFree: true,
       metaWords: '当前 0 字',
-      metaEdited: '最后编辑 —',
-      fields: field('素材说明', '', '这个素材的用途、联想与使用方式……')
+      metaEdited: `最后编辑 ${m.edited || '—'}`,
+      fields: field('素材说明', m.note, '这个素材的用途、联想与使用方式……', 'note')
     })
   };
 }
@@ -1602,6 +1989,42 @@ function titleOf(m, id) {
   return '';
 }
 
+/* 当前编辑页对应的数据对象（字段读写的落点） */
+function editorObject(m, id) {
+  switch (m) {
+    case 'volume':    return volumeById(id);
+    case 'chapters':  { const f = chapterById(id); return f ? f.chapter : null; }
+    case 'outline':   return outlineNode(id);
+    case 'characters': return charById(id);
+    case 'world':     return worldById(id);
+    case 'scenes':    return sceneById(id);
+    case 'plot':      return plotById(id);
+    case 'timeline':  return tlById(id);
+    case 'notes':     return DATA.notes.find(x => x.id === id) || null;
+    case 'settings': case 'library': { const t = findTerm(id); return t ? t.item : null; }
+    case 'materials': { const mt = findMaterial(id); return mt ? mt.item : null; }
+  }
+  return null;
+}
+
+/* 编辑区各字段 → 数据模型。
+   正文支持加粗 / 图片 / 网格线等富文本，故按 innerHTML 存取。
+   每次键入都同步，切换条目时 renderEditor 重建 DOM 也不会丢内容。 */
+function syncFields() {
+  const t = editorTarget();
+  if (!t) return false;
+  const obj = editorObject(t.key, t.id);
+  if (!obj) return false;
+  let changed = false;
+  $$('#pageWrap .field-input[data-field]').forEach(el => {
+    const key = el.dataset.field;
+    const html = el.innerHTML;
+    if (obj[key] !== html) { obj[key] = html; changed = true; }
+  });
+  if (changed) obj.edited = nowString();
+  return changed;
+}
+
 /* 当前编辑页对应的数据键（章节模块可能是卷或章节） */
 function editorTarget() {
   const m = state.module;
@@ -1682,6 +2105,8 @@ function bindPage() {
   }
 
   wrap.oninput = () => {   /* 属性赋值，避免重复绑定 */
+    /* 每次键入即写回数据模型，切换条目重建 DOM 时不会丢内容 */
+    syncFields();
     /* 立即写回章节正文实际字数与最后编辑时间（不依赖防抖，切换章节也不丢统计） */
     if (state.module === 'chapters' && state.chapterId) {
       const f = chapterById(state.chapterId);
@@ -1705,6 +2130,7 @@ function bindPage() {
       $('#editorWords').textContent = txt.length ? fmt(txt.length) + ' 字' : '0 字';
       renderInspector();
     }, 300);
+    markDirty();
   };
 
   /* 页头标题：编辑即写回数据，并同步侧边栏对应行 */
@@ -1715,6 +2141,7 @@ function bindPage() {
       if (!sync) return;
       updateDataTitle(sync.key, sync.id, titleEl.textContent.trim());
       updateSidebarTitle(sync.key, sync.id);
+      markDirty();
     };
   }
 
@@ -2281,6 +2708,7 @@ function renderLibraryView() {
         b.project.name = name;
         renderLibraryView();
         if (DATA === b) $('#projectName').textContent = name;
+        markDirty();
       });
     };
     /* 点击类型标签 → 修改作品类型 */
@@ -2290,6 +2718,7 @@ function renderLibraryView() {
       inlineEdit(typeEl, genre => {
         b.project.genre = genre;
         renderLibraryView();
+        markDirty();
       });
     };
   });
@@ -2347,6 +2776,7 @@ function confirmDelBook(card, btn, id) {
   if (idx > -1) BOOKS.splice(idx, 1);
   if (DATA && DATA.id === id) DATA = BOOKS[0] || null;
   renderLibraryView();
+  markDirty(0);
   toast('已从书库删除');
 }
 
@@ -2358,6 +2788,7 @@ function openBook(id) {
   DATA = b;
   document.body.classList.remove('view-home');
   initWorkbench();
+  markDirty();
 }
 
 /* 新建作品 */
@@ -2374,6 +2805,7 @@ function confirmNewBook() {
   $('#newBookName').value = '';
   showNewBookForm(false);
   renderLibraryView();
+  markDirty(0);
   toast(`已创建《${name}》`);
 }
 
@@ -2400,6 +2832,79 @@ function bindTitleRename() {
       renderLibraryView();
     });
   };
+}
+
+/* ================= 备份：导出 / 导入 JSON ================= */
+
+function exportBackup() {
+  syncFields();
+  let json;
+  try {
+    json = JSON.stringify({
+      app: '墨庐 · 小说创作工作台',
+      format: ML_STORE.FORMAT,
+      savedAt: new Date().toISOString(),
+      books: BOOKS,
+    }, null, 2);
+  } catch (e) {
+    return toast('导出失败：数据无法序列化');
+  }
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const name = `墨庐备份-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+  try {
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`已导出 ${name}`);
+  } catch (e) {
+    toast('导出失败：' + e.message);
+  }
+}
+
+function importBackup(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    let raw;
+    try { raw = JSON.parse(String(rd.result)); }
+    catch (e) { return toast('导入失败：文件不是合法 JSON'); }
+    const books = sanitizeBooks(Array.isArray(raw) ? raw : raw && raw.books);
+    if (!books) return toast('导入失败：文件中没有可识别的作品数据');
+    adoptBooks(books);
+    renderLibraryView();
+    document.body.classList.add('view-home');
+    markDirty(0);
+    toast(`已导入 ${books.length} 部作品`);
+  };
+  rd.onerror = () => toast('导入失败：无法读取文件');
+  rd.readAsText(file);
+}
+
+/* 导入会覆盖整个书库，沿用应用内既有的二次确认交互 */
+const importArm = { on: false, timer: null };
+function armImport(btn) {
+  const reset = () => {
+    importArm.on = false;
+    btn.classList.remove('confirming');
+    btn.textContent = '导入备份';
+  };
+  if (!importArm.on) {
+    importArm.on = true;
+    btn.classList.add('confirming');
+    btn.textContent = '确认覆盖？';
+    toast('导入会覆盖当前书库，再次点击确认');
+    clearTimeout(importArm.timer);
+    importArm.timer = setTimeout(reset, 3000);
+    return;
+  }
+  clearTimeout(importArm.timer);
+  reset();
+  $('#backupFileInput').click();
 }
 
 /* ================= 统计 ================= */
@@ -2677,16 +3182,20 @@ function bindFmtBar() {
     });
   };
 
+  /* 格式化经 execCommand 或直接改 DOM，统一在此回写数据模型 */
+  const afterFmt = () => { syncFields(); markDirty(); };
+
   /* 加粗 / 斜体：仅作用于选区 */
   const applyInline = cmd => {
     if (!validSelection()) return;
     if (restoreSelection()) exec(cmd);
+    afterFmt();
   };
   $('#fmtBold').onclick = () => applyInline('bold');
   $('#fmtItalic').onclick = () => applyInline('italic');
 
   /* 网格线：作用于选中段落 */
-  $('#fmtGrid').onclick = applyGridToSelection;
+  $('#fmtGrid').onclick = () => { applyGridToSelection(); afterFmt(); };
 
   /* 分割线：在光标处插入水平线（插入操作） */
   $('#fmtHr').onclick = () => {
@@ -2695,6 +3204,7 @@ function bindFmtBar() {
       const ok = exec('insertHorizontalRule');
       if (!ok) toast('请在正文中放置光标后再插入分割线');
     }
+    afterFmt();
   };
 
   /* 插入图片：打开文件选择器 → 读为 dataURL → 插入光标处（也支持直接粘贴截图） */
@@ -2730,6 +3240,9 @@ function bindFmtBar() {
       if (field) field.dispatchEvent(new Event('input', { bubbles: true }));
       toast('图片已移除');
     }
+    /* 直接改 DOM 不触发 input，需显式回写 */
+    syncFields();
+    markDirty();
   });
 
   /* 搜索 */
@@ -2749,8 +3262,8 @@ function bindFmtBar() {
   });
 
   /* 撤回 / 恢复 */
-  $('#fmtUndo').onclick = () => exec('undo');
-  $('#fmtRedo').onclick = () => exec('redo');
+  $('#fmtUndo').onclick = () => { exec('undo'); afterFmt(); };
+  $('#fmtRedo').onclick = () => { exec('redo'); afterFmt(); };
 
   /* 点击编辑区关闭浮动菜单 */
   $('#editorScroll').addEventListener('mousedown', () => {
@@ -2764,7 +3277,29 @@ document.addEventListener('DOMContentLoaded', () => {
   if (appInited) return;
   appInited = true;
   applyTheme();
+  bootData();              /* 先恢复本地数据，再渲染书库 */
   renderLibraryView();
+  persist.booting = false;
+  setSaveState(ML_STORE.usable ? 'saved' : 'none');
+
+  /* 关闭 / 刷新前立即落盘，防止防抖窗口内的改动丢失
+     （ML_STORE.save 先同步写 localStorage，故此处必定生效） */
+  const flush = () => {
+    if (persist.timer) { clearTimeout(persist.timer); saveLibrary(); }
+  };
+  window.addEventListener('beforeunload', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+
+  /* 备份：导出 / 导入 */
+  $('#exportBtn').onclick = exportBackup;
+  $('#importBtn').onclick = () => armImport($('#importBtn'));
+  $('#backupFileInput').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (f) importBackup(f);
+  });
 
   /* 书库 ↔ 工作台 */
   $('#homeBtn').onclick = () => {
@@ -2828,9 +3363,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const b = $('#saveBtn');
     b.classList.add('saved');
     b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>已保存';
-    $('#saveState').innerHTML = '<span class="dot"></span>已保存 · 刚刚';
-    DATA.project.lastSaved = '刚刚';
-    DATA.updated = nowString();   /* 作品更新日期与电脑日期关联 */
+    syncFields();
+    if (DATA) {
+      DATA.project.lastSaved = '刚刚';
+      DATA.updated = nowString();   /* 作品更新日期与电脑日期关联 */
+    }
     /* 更新当前编辑对象的最后编辑时间（与电脑日期关联） */
     const t = editorTarget();
     if (t) {
@@ -2847,7 +3384,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     }
-    toast('已保存到本地文档库');
+    saveLibrary().then(res => {
+      if (res && (res.ls || res.idb)) toast('已保存到本地 · ' + ML_STORE.describe());
+      else if (!ML_STORE.usable) toast('当前环境无法本地存储，请用「导出备份」保存进度');
+      else toast('保存失败，请用「导出备份」保存进度');
+    });
     setTimeout(() => {
       b.classList.remove('saved');
       b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 3.5h11l3 3v14H5z"/><path d="M8 3.5v6h8v-6M8 20.5v-7h8v7"/></svg>保存';

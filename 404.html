@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>页面不存在 · 墨庐</title>
+  <link rel="icon" type="image/svg+xml" href="/novel-workbench/favicon.svg">
+  <!-- 样式内联：本页会被 Pages 用于任意深度的路径，相对路径的外链会失效 -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --canvas: #E9E2D4;
+      --card:   #FCFAF4;
+      --ink:    #2E2A24;
+      --ink-2:  #6E675A;
+      --ink-3:  #9C9383;
+      --line:   #DED6C4;
+      --accent: #9A7150;
+      --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC",
+               "STZhongsong", "SimSun", Georgia, serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #131110;
+        --card:   #2C2822;
+        --ink:    #EAE4D8;
+        --ink-2:  #ABA294;
+        --ink-3:  #7E766A;
+        --line:   #37322A;
+        --accent: #C89B73;
+      }
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: var(--serif);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .sheet {
+      max-width: 420px;
+      width: 100%;
+      padding: 44px 40px 38px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(60, 52, 38, .10), 0 8px 28px rgba(60, 52, 38, .08);
+      text-align: center;
+    }
+
+    .mark {
+      width: 40px; height: 40px;
+      margin: 0 auto 22px;
+      border-radius: 11px;
+      background: var(--ink);
+      display: grid; place-items: center;
+    }
+    .mark svg {
+      width: 23px; height: 23px;
+      fill: none; stroke: var(--card);
+      stroke-width: 1.8;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+
+    .code {
+      font-size: 12px;
+      letter-spacing: .26em;
+      color: var(--ink-3);
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      font-size: 21px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      margin-bottom: 14px;
+    }
+
+    p {
+      font-size: 13.5px;
+      line-height: 1.9;
+      color: var(--ink-2);
+      margin-bottom: 26px;
+    }
+
+    .rule {
+      width: 34px; height: 1px;
+      margin: 0 auto 24px;
+      background: var(--line);
+    }
+
+    a.home {
+      display: inline-block;
+      padding: 9px 22px;
+      font-family: inherit;
+      font-size: 13.5px;
+      color: var(--card);
+      background: var(--accent);
+      border-radius: 3px;
+      text-decoration: none;
+      letter-spacing: .08em;
+      transition: opacity .2s ease;
+    }
+    a.home:hover { opacity: .86; }
+  </style>
+</head>
+<body>
+
+  <div class="sheet">
+    <div class="mark">
+      <svg viewBox="0 0 24 24">
+        <path d="M7 3.5v17M7 3.5L18 8v13M7 20.5L18 21"/>
+        <path d="M10.5 8.5l4.5 1.8M10.5 12.5l4.5 1.8M10.5 16.5l4.5 1.8"/>
+      </svg>
+    </div>
+
+    <div class="code">404</div>
+    <h1>此页未曾落笔</h1>
+    <div class="rule"></div>
+    <p>你要找的页面不在墨庐中，<br>或许是链接有误，或许它已被移走。</p>
+
+    <a class="home" href="/novel-workbench/">返回书库</a>
+  </div>
+
+</body>
+</html>

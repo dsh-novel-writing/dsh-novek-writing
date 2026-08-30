@@ -1,0 +1,18 @@
+# 依赖（jsdom 仅测试用，不入库）
+node_modules/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 编辑器与操作系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时与备份文件
+*.tmp
+*.bak
+*~
