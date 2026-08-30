@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小说创作台 · DeepSeek Harness 布局实验</title>
+  <style>
+    :root {
+      --dsw-static-neutral-bluish-00: rgb(255, 255, 255);
+      --dsw-static-neutral-bluish-50: rgb(249, 250, 251);
+      --dsw-static-neutral-bluish-75: rgb(241, 243, 245);
+      --dsw-static-neutral-bluish-100: rgb(235, 238, 242);
+      --dsw-static-neutral-bluish-400: rgb(173, 178, 184);
+      --dsw-static-neutral-bluish-600: rgb(129, 133, 140);
+      --dsw-static-neutral-bluish-700: rgb(97, 102, 107);
+      --dsw-static-neutral-bluish-1000: rgb(15, 17, 21);
+      --dsw-static-deepseek-50: rgb(237, 243, 254);
+      --dsw-static-deepseek-100: rgb(228, 237, 253);
+      --dsw-static-deepseek-500: rgb(65, 118, 230);
+      --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-00);
+      --dsw-alias-label-primary: var(--dsw-static-neutral-bluish-1000);
+      --dsw-alias-label-secondary: var(--dsw-static-neutral-bluish-700);
+      --dsw-alias-label-tertiary: var(--dsw-static-neutral-bluish-600);
+      --dsw-alias-label-caption: var(--dsw-static-neutral-bluish-400);
+      --dsw-alias-border-l1: rgba(0, 0, 0, 0.04);
+      --dsw-alias-border-l2: rgba(0, 0, 0, 0.1);
+      --dsw-specific-sidebar-fill: var(--dsw-static-neutral-bluish-50);
+      --dsw-specific-sidebar-nav-item-active: var(--dsw-static-neutral-bluish-100);
+      --dsw-specific-sidebar-nav-item-hover: var(--dsw-static-neutral-bluish-75);
+      --dsw-specific-bubble: var(--dsw-static-deepseek-50);
+      --sidebar-width: 280px;
+      --dock-width: 360px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      color: var(--dsw-alias-label-primary);
+      background: var(--dsw-alias-bg-base);
+      -webkit-font-smoothing: antialiased;
+    }
+    .frame {
+      position: relative;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      height: 100%;
+      overflow: hidden;
+    }
+    .sidebar {
+      background: var(--dsw-specific-sidebar-fill);
+      border-right: 1px solid var(--dsw-alias-border-l1);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .brand { padding: 16px 18px 8px; font-weight: 650; font-size: 15px; }
+    .sessions { flex: 1; padding: 8px; }
+    .session {
+      padding: 10px 12px;
+      border-radius: 10px;
+      color: var(--dsw-alias-label-secondary);
+      margin-bottom: 4px;
+    }
+    .session.active {
+      background: var(--dsw-specific-sidebar-nav-item-active);
+      color: var(--dsw-alias-label-primary);
+    }
+    .foot {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--dsw-alias-border-l2);
+    }
+    .foot button, .dock button, .toolbar button {
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: #fff;
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+    }
+    .foot button.active, .tree-item.active {
+      background: var(--dsw-specific-sidebar-nav-item-active);
+    }
+    .center {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: padding-left 160ms ease;
+    }
+    .center.open { padding-left: var(--dock-width); }
+    .chat {
+      flex: 1;
+      overflow: auto;
+      padding: 28px 32px 16px;
+    }
+    .bubble {
+      max-width: 720px;
+      background: var(--dsw-specific-bubble);
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin: 12px 0;
+      line-height: 1.55;
+    }
+    .user { background: var(--dsw-static-neutral-bluish-75); }
+    .composer {
+      margin: 0 32px 24px;
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 16px;
+      padding: 14px 16px;
+      color: var(--dsw-alias-label-caption);
+    }
+    .overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 20;
+    }
+    .dock {
+      pointer-events: auto;
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: var(--sidebar-width);
+      width: var(--dock-width);
+      display: none;
+      flex-direction: column;
+      background: var(--dsw-specific-sidebar-fill);
+      border-right: 1px solid var(--dsw-alias-border-l2);
+    }
+    .dock.open { display: flex; }
+    .dock header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--dsw-alias-border-l2);
+    }
+    .dock h1 { margin: 0; font-size: 15px; font-weight: 650; }
+    .caption { color: var(--dsw-alias-label-secondary); font-size: 12px; margin-top: 4px; }
+    .toolbar { display: flex; gap: 6px; padding: 10px 12px; flex-wrap: wrap; }
+    .tree { flex: 1; overflow: auto; padding: 4px 8px 12px; }
+    .tree-item {
+      padding: 7px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .tree-item:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
+    .indent { padding-left: 22px; color: var(--dsw-alias-label-secondary); }
+    .prompt {
+      margin: 0 12px 12px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid var(--dsw-alias-border-l2);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      max-height: 220px;
+      overflow: auto;
+      color: var(--dsw-alias-label-secondary);
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <aside class="sidebar">
+      <div class="brand">DeepSeek Harness</div>
+      <div class="sessions">
+        <div class="session active">北门问剑 · 续写第2章</div>
+        <div class="session">雨城夜话 · 对设定</div>
+      </div>
+      <div class="foot">
+        <button type="button" id="open-studio">小说创作台</button>
+        <button type="button">设置</button>
+      </div>
+    </aside>
+    <main class="center" id="center">
+      <div class="chat" data-conversation-scroll>
+        <div class="bubble user">把林远下一章接着写，先用当前小说的上下文，但不要把市场调研笔记整段塞进来。</div>
+        <div class="bubble">我会读 chapters/001-opening.md 和人物设定路径，笔记只在你点名时打开。创作台停在对话左侧，会话列表仍在官方侧栏。</div>
+      </div>
+      <div class="composer">给 DeepSeek 发消息…</div>
+    </main>
+    <div class="overlay">
+      <section class="dock" id="dock">
+        <header>
+          <h1>小说创作台</h1>
+          <div class="caption">shell.overlay 停靠 · 不替换 conversation</div>
+        </header>
+        <div class="toolbar">
+          <button type="button" id="new-book">新建小说</button>
+          <button type="button" id="toggle-inject">注入提示词：开</button>
+        </div>
+        <div class="tree" id="tree"></div>
+        <pre class="prompt" id="prompt"></pre>
+      </section>
+    </div>
+  </div>
+  <script>
+    const novels = {
+      "north-gate": {
+        title: "北门问剑",
+        inject: true,
+        writing: "只写冷硬玄幻，短句，少形容词。",
+        characters: [{ title: "林远", path: "novels/north-gate/characters/lin-yuan.md" }],
+        chapters: [{ title: "第1章 开篇", path: "novels/north-gate/chapters/001-opening.md" }],
+        notes: [{ title: "市场调研", path: "novels/north-gate/notes/market-research.md" }],
+      },
+      "rain-city": {
+        title: "雨城夜话",
+        inject: false,
+        writing: "",
+        characters: [{ title: "陈青", path: "novels/rain-city/characters/chen-qing.md" }],
+        chapters: [{ title: "第1章 夜班", path: "novels/rain-city/chapters/001-night.md" }],
+        notes: [{ title: "时间线", path: "novels/rain-city/notes/timeline.md" }],
+      },
+    };
+    let active = "north-gate";
+    let open = true;
+
+    function assemble() {
+      const book = novels[active];
+      const writing = book.inject && book.writing
+        ? "## 小说创作提示词\n" + book.writing + "\n\n"
+        : "";
+      const lines = (label, items) =>
+        label + "\n" + items.map((item) => "- " + item.title + " — " + item.path).join("\n");
+      return writing
+        + "## 当前小说\n书名：" + book.title + "\n"
+        + lines("人物设定（路径，不注入全文）：", book.characters) + "\n"
+        + lines("已写章节：", book.chapters) + "\n"
+        + lines("笔记（仅按需读取）：", book.notes);
+    }
+
+    function renderTree() {
+      const tree = document.getElementById("tree");
+      tree.innerHTML = "";
+      for (const [slug, book] of Object.entries(novels)) {
+        const row = document.createElement("div");
+        row.className = "tree-item" + (slug === active ? " active" : "");
+        row.textContent = book.title;
+        row.onclick = () => { active = slug; draw(); };
+        tree.appendChild(row);
+        if (slug === active) {
+          for (const item of [...book.characters, ...book.chapters, ...book.notes]) {
+            const child = document.createElement("div");
+            child.className = "tree-item indent";
+            child.textContent = item.title;
+            tree.appendChild(child);
+          }
+        }
+      }
+    }
+
+    function draw() {
+      document.getElementById("dock").classList.toggle("open", open);
+      document.getElementById("center").classList.toggle("open", open);
+      document.getElementById("open-studio").classList.toggle("active", open);
+      document.getElementById("toggle-inject").textContent =
+        "注入提示词：" + (novels[active].inject ? "开" : "关");
+      document.getElementById("prompt").textContent = assemble();
+      renderTree();
+    }
+
+    document.getElementById("open-studio").onclick = () => { open = !open; draw(); };
+    document.getElementById("toggle-inject").onclick = () => {
+      novels[active].inject = !novels[active].inject;
+      draw();
+    };
+    document.getElementById("new-book").onclick = () => {
+      const title = window.prompt("新书名", "第三本");
+      if (!title) return;
+      const slug = "book-" + Date.now();
+      novels[slug] = {
+        title,
+        inject: true,
+        writing: "沿用工作室默认创作提示词。",
+        characters: [],
+        chapters: [],
+        notes: [],
+      };
+      active = slug;
+      open = true;
+      draw();
+    };
+    draw();
+  </script>
+</body>
+</html>

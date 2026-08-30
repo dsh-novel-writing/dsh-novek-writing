@@ -1,18 +1,22 @@
-# 依赖（jsdom 仅测试用，不入库）
+# dependencies
 node_modules/
 
-# 日志
+# build
+lib/
+*.tsbuildinfo
+
+# logs
 *.log
 npm-debug.log*
 
-# 编辑器与操作系统
+# editor / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# 临时与备份文件
+# temp
 *.tmp
 *.bak
 *~

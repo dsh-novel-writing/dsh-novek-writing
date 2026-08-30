@@ -1,64 +1,52 @@
-# 墨庐 · 小说创作工作台
+# 小说台（novel-studio）
 
-交互式 HTML 原型：书库 / 章节 / 大纲 / 场景 / 人物 / 世界观 / 设定 / 剧情 / 时间线 / 资料库 / 笔记 / 素材库，运行时零依赖，双击 `index.html` 即可打开；已部署至 GitHub Pages。
+DeepSeek Harness 插件。气质参考墨庐的文稿台（单栏衬线稿纸、封面书架），细节以仓库 `Design.md` v0.1 为准：简单、设定分层、作者改设定、模型只读写正文。
 
-线上地址：<https://jin1139732559-bot.github.io/novel-workbench/>
+侧栏底部点「小说」后是 **侧栏 | 小说台 | 对话**。三页：
 
-## 目录结构
+- **书架**：竖版封面、每本书独立配置
+- **稿纸**：单栏创作、格式栏、字数、实时续写、自动保存
+- **设定**：世界观 / 大纲 / 人物基础与复杂 / 史实库（仅作者可改）
+
+不替换官方聊天主栏，不关掉官方会话列表。颜色只用 `--dsw-alias-*`。
+
+## 数据
+
+默认书库：`~/.dsh/novel-studio/library`。可在插件设置里改。
 
 ```
-index.html        页面结构（书库 + 工作台）
-404.html          Pages 404 页（样式内联，不依赖外部文件）
-favicon.svg       站点图标
-css/styles.css    设计系统与全部样式，亮 / 暗双主题
-js/storage.js     本地持久化（IndexedDB + localStorage 快照）
-js/data.js        默认书库数据（BOOKS / DATA）
-js/app.js         全部交互逻辑
-test/smoke.js     jsdom 全量回归测试
+studio/prompt.md
+studio/state.json
+novels/<slug>/book.md
+novels/<slug>/cover.jpg          # 可选竖版封面
+novels/<slug>/worldview/timeline.md
+novels/<slug>/worldview/background.md
+novels/<slug>/outline.md
+novels/<slug>/facts/*.md
+novels/<slug>/characters/<id>/basic.md
+novels/<slug>/characters/<id>/complex.md
+novels/<slug>/chapters/*.md
 ```
 
-运行时零依赖：不引用任何 CDN、字体文件或网络请求，正文字体使用系统字体。jsdom 仅测试时需要。
+系统提示每次注入：时间线 + 背景故事 + 人物基础。大纲、史实库、人物复杂设定不注入，用 `novel_read_outline` / `novel_read_facts` / `novel_read_character` 按需读。
 
-## 数据保存
+Agent 只应写 `chapters/*.md`（`novel_commit_chapter`）。设定文件给人读、给人改。
 
-写入的内容会自动保存到浏览器本地，**刷新或关闭页面后不会丢失**。
+## 安装
 
-- **主存 IndexedDB**：不受 localStorage 约 5MB 的限制，正文内嵌图片（dataURL）也能容纳。
-- **localStorage 快照**：同时写入一份相同数据，仅用于启动时同步秒开，避免默认数据闪现；写入超限时静默跳过，改由 IndexedDB 接管。
-- **保存时机**：键入后 700ms 防抖落盘；新建 / 删除 / 重命名 / 改标签等结构性改动即时落盘；关闭或切换标签页前强制落盘。标题栏与状态栏会显示真实的保存状态。
-- 两者都不可用时（例如某些浏览器在 `file://` 下禁用存储）会降级为纯内存，并在界面明确提示改用导出备份。
+需要本机已安装 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（当前插件对齐 `0.1.0-rc.6`）。
 
-### 备份
-
-书库页右上角提供「导出备份」与「导入备份」：
-
-- 导出：将整个书库连同正文写成 `墨庐备份-YYYYMMDD-HHmm.json`。
-- 导入：从备份文件恢复。**会覆盖当前书库**，因此需要点击两次确认。
-
-浏览器数据可能被清理站点数据、隐私模式或换设备等操作清空，重要进度建议定期导出。
-
-## 本地运行
-
-直接双击 `index.html` 即可。若需以 `http://` 方式打开（部分浏览器在 `file://` 下限制本地存储）：
-
-```bash
-npm run serve
+```sh
+git clone https://github.com/dsh-novel-writing/dsh-novek-writing.git
+cd dsh-novek-writing
+dsh plugin --profile web add .
 ```
 
-## 测试
+`dsh plugin` 会把插件装进 web profile。不要 `disabled: true` 官方 `ui-sidebar`。停靠槽位是 footer + `shell.overlay`。
 
-```bash
-npm install     # 安装 jsdom
-npm test        # 等价于 node test/smoke.js
+开发时在已 link 的目录里：
+
+```sh
+pnpm install
+pnpm check
 ```
-
-覆盖书库、八模块统一交互、设定分区与资料库分组的新建 / 改名 / 删除、时间线长按拖动排序、大纲、章节、字段持久化与还原、正文图片等，共 242 项断言。
-
-jsdom 没有布局引擎（`getBoundingClientRect()` 恒为 0），拖动排序的测试自行合成每行 40px 的几何；真实浏览器中的手感需另行验证。
-
-## 交互备忘
-
-- **设定分区 / 资料库分组**：顶部 ＋ 新建的是与预设项（核心规则、历史大事 / 地名考据等）同级的分区；双击分区名可改名，包括预设项；分区头的垃圾桶按钮点两次（3 秒内）删除该分区及其全部条目。行内按钮是 hover 显形的，改名靠双击名字，所以点击分区名不再折叠——折叠请点行首的箭头。
-- **分区名不可重名**：设定条目与资料库条目共用「分区名·条目名」这一套 id，所以两个模块之间也不允许同名，重名会被拒绝并提示。
-- **时间线排序**：在条目上按住约 0.35 秒进入拖动态，随后移动鼠标即可换位，松手写入。按下后立刻移动会被判为划选并取消拾起；搜索过滤状态下禁止拖动，以免打乱被隐藏的条目。
-- **素材库**：仍是原有行为（分组行内 ＋ 新建素材），分组名暂未接入改名与删除。

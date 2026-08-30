@@ -1,0 +1,4 @@
+# Insert the host plugin. Do not disable ui-sidebar.
+- insert:
+    - id: novel-studio
+      name: novel-studio
